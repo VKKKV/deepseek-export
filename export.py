@@ -24,9 +24,8 @@ BASE_URL = "https://chat.deepseek.com"
 # ─── Token 获取 ───────────────────────────────────────────────
 
 def get_token_via_browser(headless=False):
-    """启动浏览器，等待用户登录，从 localStorage 提取 token
-    使用持久化上下文，登录态会保存到 ~/.local/share/deepseek-export/browser-data/，
-    下次运行无需重新登录。
+    """启动浏览器，通过网络拦截从 DeepSeek 的 API 请求中抓取 Authorization token。
+    使用持久化上下文保存登录态，下次无需重复登录。
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -34,36 +33,62 @@ def get_token_via_browser(headless=False):
         print("错误: 需要 playwright，请运行: uv run playwright install chromium")
         sys.exit(1)
 
-    # 持久化目录，保存登录 cookie / localStorage
     user_data_dir = os.path.expanduser("~/.local/share/deepseek-export/browser-data")
     os.makedirs(user_data_dir, exist_ok=True)
 
     with sync_playwright() as p:
-        # Wayland 下 Chromium 需要 ozone-platform 提示，否则闪退
-        launch_args = [
-            "--disable-blink-features=AutomationControlled",
-            "--ozone-platform-hint=auto",
-        ]
         context = p.chromium.launch_persistent_context(
             user_data_dir,
             headless=headless,
-            args=launch_args,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--ozone-platform-hint=auto",
+            ],
         )
         page = context.pages[0] if context.pages else context.new_page()
+
+        # 通过网络请求拦截抓取 Authorization 头
+        token = None
+
+        def on_response(response):
+            nonlocal token
+            if token:
+                return
+            try:
+                auth = response.request.headers.get("authorization", "")
+                if auth.startswith("Bearer ") and len(auth) > 20:
+                    token = auth
+            except Exception:
+                pass
+
+        page.on("response", on_response)
 
         print("正在打开 DeepSeek...")
         page.goto(f"{BASE_URL}/a/chat/s/new", wait_until="domcontentloaded")
 
-        # 先检查是否已有 token（已登录）
-        token = None
-        for i in range(90):  # 最多等 90 秒
-            try:
-                raw = page.evaluate("localStorage.getItem('userToken')")
-                if raw and isinstance(raw, str) and raw.strip() not in ("", "null", "undefined"):
-                    token = raw.strip()
-                    break
-            except Exception:
-                pass
+        # DeepSeek 加载后会自动发 API 请求，拦截即可拿到 token
+        # 等页面加载 + 网络请求完成
+        for i in range(60):
+            if token:
+                break
+            # 如果页面加载完但没抓到（可能在等登录），手动触发一个 API 请求
+            if i == 5 and not token:
+                # 先 dump localStorage 帮助调试
+                try:
+                    keys = page.evaluate("Object.keys(localStorage)")
+                    print(f"  localStorage keys: {keys}")
+                    for k in (keys or []):
+                        v = page.evaluate(f"localStorage.getItem('{k}')")
+                        preview = str(v)[:80] if v else "null"
+                        print(f"    {k}: {preview}")
+                except Exception:
+                    pass
+                try:
+                    page.evaluate(
+                        "fetch('/api/v0/chat_session/fetch_page?count=1', {credentials:'include'})"
+                    )
+                except Exception:
+                    pass
             if i == 3:
                 print("请在浏览器中登录 DeepSeek...")
             time.sleep(1)
@@ -72,12 +97,10 @@ def get_token_via_browser(headless=False):
 
     if not token:
         print("错误: 未能获取 token，请手动提供 --token 参数")
-        print("  1) 浏览器 F12 → Console → localStorage.getItem('userToken')")
-        print("  2) 或 Network 标签找任意请求的 Authorization 头")
-        print("  然后: uv run export.py --token 'Bearer sk-xxx'")
+        print("  方法: 浏览器 F12 → Network → 找任意 /api/v0 请求 → 复制 Authorization 头")
+        print("  然后: uv run export.py --token 'Bearer <token>'")
         sys.exit(1)
 
-    # token 可能已经包含 "Bearer " 前缀，也可能没有
     if not token.startswith("Bearer "):
         token = f"Bearer {token}"
 
