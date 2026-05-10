@@ -19,6 +19,7 @@ from pathlib import Path
 import requests
 
 BASE_URL = "https://chat.deepseek.com"
+API_PAGE_SIZE = 50
 
 
 # ─── Token 获取 ───────────────────────────────────────────────
@@ -63,37 +64,45 @@ def get_token_via_browser(headless=False):
 
         page.on("response", on_response)
 
-        print("正在打开 DeepSeek...")
-        page.goto(f"{BASE_URL}/a/chat/s/new", wait_until="domcontentloaded")
+        try:
+            print("正在打开 DeepSeek...")
+            page.goto(f"{BASE_URL}/a/chat/s/new", wait_until="domcontentloaded")
 
-        # DeepSeek 加载后会自动发 API 请求，拦截即可拿到 token
-        # 等页面加载 + 网络请求完成
-        for i in range(60):
-            if token:
-                break
-            # 如果页面加载完但没抓到（可能在等登录），手动触发一个 API 请求
-            if i == 5 and not token:
-                # 先 dump localStorage 帮助调试
-                try:
-                    keys = page.evaluate("Object.keys(localStorage)")
-                    print(f"  localStorage keys: {keys}")
-                    for k in (keys or []):
-                        v = page.evaluate(f"localStorage.getItem('{k}')")
-                        preview = str(v)[:80] if v else "null"
-                        print(f"    {k}: {preview}")
-                except Exception:
-                    pass
-                try:
-                    page.evaluate(
-                        "fetch('/api/v0/chat_session/fetch_page?count=1', {credentials:'include'})"
-                    )
-                except Exception:
-                    pass
-            if i == 3:
-                print("请在浏览器中登录 DeepSeek...")
-            time.sleep(1)
-
-        context.close()
+            # DeepSeek 加载后会自动发 API 请求，拦截即可拿到 token
+            # 等页面加载 + 网络请求完成
+            for i in range(60):
+                if token:
+                    break
+                # 如果页面加载完但没抓到（可能在等登录），手动触发一个 API 请求
+                if i == 5 and not token:
+                    # 先 dump localStorage 帮助调试
+                    try:
+                        keys = page.evaluate("Object.keys(localStorage)")
+                        print(f"  localStorage keys: {keys}")
+                        for k in (keys or []):
+                            v = page.evaluate(f"localStorage.getItem('{k}')")
+                            preview = str(v)[:80] if v else "null"
+                            print(f"    {k}: {preview}")
+                    except Exception:
+                        pass
+                    try:
+                        page.evaluate(
+                            "fetch('/api/v0/chat_session/fetch_page?count=1', {credentials:'include'})"
+                        )
+                    except Exception:
+                        pass
+                if i == 3:
+                    print("请在浏览器中登录 DeepSeek...")
+                time.sleep(1)
+        finally:
+            try:
+                page.close()
+            except Exception:
+                pass
+            try:
+                context.close()
+            except Exception as e:
+                print(f"  浏览器关闭时忽略错误: {e}")
 
     if not token:
         print("错误: 未能获取 token，请手动提供 --token 参数")
@@ -120,24 +129,128 @@ def make_headers(token):
     }
 
 
+def _safe_json(resp):
+    try:
+        return resp.json()
+    except Exception:
+        return None
+
+
+def _coerce_seq_id(value):
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if re.fullmatch(r"-?\d+", stripped):
+            try:
+                return int(stripped)
+            except Exception:
+                return None
+    return None
+
+
+def _derive_next_cursor(page_sessions, biz):
+    next_cursor = biz.get("next_seq_id")
+    if next_cursor not in (None, ""):
+        return next_cursor
+
+    seq_ids = []
+    for session in page_sessions:
+        seq_id = _coerce_seq_id(session.get("seq_id"))
+        if seq_id is not None:
+            seq_ids.append(seq_id)
+
+    if seq_ids:
+        return min(seq_ids)
+
+    return None
+
+
+def _page_sessions_debug(data, page_num):
+    print(f"  第 {page_num} 页原始响应 (前 500 字符): {json.dumps(data, ensure_ascii=False)[:500]}")
+
+
 def fetch_all_sessions(token, count=500):
-    """获取所有对话会话列表"""
+    """获取所有对话会话列表，count 为最大会话数"""
+    max_sessions = max(int(count or 0), 0)
+    if max_sessions == 0:
+        return []
+
     headers = make_headers(token)
     url = f"{BASE_URL}/api/v0/chat_session/fetch_page"
-    params = {"count": count}
+    collected = []
+    seen_ids = set()
+    before_seq_id = None
+    page_num = 0
 
-    resp = requests.get(url, headers=headers, params=params)
-    resp.raise_for_status()
-    data = resp.json()
+    while len(collected) < max_sessions:
+        page_num += 1
+        params = {"count": min(API_PAGE_SIZE, max_sessions - len(collected))}
+        if before_seq_id not in (None, ""):
+            params["before_seq_id"] = before_seq_id
 
-    biz = (data.get("data") or {}).get("biz_data") or {}
-    sessions = biz.get("chat_sessions") or []
+        resp = requests.get(url, headers=headers, params=params)
+        resp.raise_for_status()
+        data = _safe_json(resp)
+        if not isinstance(data, dict):
+            print(f"  第 {page_num} 页返回不是可解析的 JSON 对象，停止分页")
+            break
 
-    if not sessions:
-        # 打印原始响应帮助调试
-        print(f"  原始响应 (前 500 字符): {json.dumps(data, ensure_ascii=False)[:500]}")
+        data_block = data.get("data") or {}
+        biz = data_block.get("biz_data") or {}
+        if not isinstance(biz, dict):
+            print(f"  第 {page_num} 页响应缺少 biz_data，停止分页")
+            _page_sessions_debug(data, page_num)
+            break
 
-    return sessions
+        page_sessions = biz.get("chat_sessions") or []
+        if not isinstance(page_sessions, list):
+            print(f"  第 {page_num} 页 chat_sessions 不是列表，停止分页")
+            _page_sessions_debug(data, page_num)
+            break
+
+        if not page_sessions:
+            print(f"  第 {page_num} 页没有返回会话列表")
+            _page_sessions_debug(data, page_num)
+            break
+
+        added = 0
+        for session in page_sessions:
+            if not isinstance(session, dict):
+                continue
+            session_id = session.get("id")
+            if not session_id or session_id in seen_ids:
+                continue
+            seen_ids.add(session_id)
+            collected.append(session)
+            added += 1
+            if len(collected) >= max_sessions:
+                break
+
+        next_cursor = _derive_next_cursor(page_sessions, biz)
+        has_more = biz.get("has_more")
+
+        if has_more is False:
+            break
+
+        if next_cursor in (None, ""):
+            print(f"  第 {page_num} 页没有可继续推进的 cursor，停止分页")
+            break
+
+        if next_cursor == before_seq_id:
+            print(f"  第 {page_num} 页 cursor 未推进，停止分页")
+            break
+
+        if added == 0 and has_more is not True:
+            print(f"  第 {page_num} 页没有新增会话且未声明更多数据，停止分页")
+            break
+
+        before_seq_id = next_cursor
+
+    if not collected:
+        print("  没有找到任何会话")
+
+    return collected
 
 
 def fetch_messages(token, session_id):
@@ -163,7 +276,24 @@ def delete_session(token, session_id):
     body = {"chat_session_id": session_id}
 
     resp = requests.post(url, headers=headers, json=body)
-    return resp.status_code == 200
+    if not resp.ok:
+        return False
+
+    data = _safe_json(resp)
+    if not isinstance(data, dict):
+        return True
+
+    for candidate in (data, data.get("data") or {}, (data.get("data") or {}).get("biz_data") or {}):
+        if not isinstance(candidate, dict):
+            continue
+        if "code" in candidate and candidate.get("code") not in (0, "0", None, ""):
+            return False
+        if candidate.get("success") is False:
+            return False
+        if candidate.get("ok") is False:
+            return False
+
+    return True
 
 
 # ─── Markdown 转换 ────────────────────────────────────────────
