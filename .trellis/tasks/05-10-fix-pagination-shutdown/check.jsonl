@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/index.md","reason":"Check against the project-wide backend guidance entry point."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Review defensive parsing and explicit failure handling for API responses."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Review code quality expectations for the script-level fix."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Review whether diagnostic output remains helpful and consistent."}

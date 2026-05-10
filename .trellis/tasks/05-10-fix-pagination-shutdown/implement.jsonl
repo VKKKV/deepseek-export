@@ -1,0 +1,4 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend spec entry point for project-wide conventions and links to the relevant guideline files."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Needed to align defensive API parsing, cleanup failures, and explicit business-error handling with project conventions."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Needed to keep the Python script changes minimal, consistent, and safe to verify."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Needed to preserve or improve user-facing diagnostics when pagination or delete responses are unexpected."}
