@@ -2,19 +2,21 @@
 
 批量导出 DeepSeek Web Chat 所有对话为 Markdown 文件，可选删除已导出对话。
 
-## 依赖
+## 安装
 
 ```bash
-pip install requests playwright
-playwright install chromium
+uv sync
+uv run playwright install chromium
 ```
 
 ## 使用
 
+所有命令用 `uv run` 执行，无需手动激活虚拟环境：
+
 ### 方式 1：自动获取 token（推荐）
 
 ```bash
-python export.py --output ./deepseek-chats
+uv run export.py --output ./deepseek-chats
 ```
 
 脚本会启动浏览器打开 DeepSeek，登录后自动提取 token。
@@ -25,19 +27,19 @@ python export.py --output ./deepseek-chats
 或者在 Console 中执行 `localStorage.getItem('userToken')`，然后：
 
 ```bash
-python export.py --token "Bearer sk-xxx" --output ./deepseek-chats
+uv run export.py --token "Bearer sk-xxx" --output ./deepseek-chats
 ```
 
 ### 导出并删除
 
 ```bash
-python export.py --output ./deepseek-chats --delete
+uv run export.py --output ./deepseek-chats --delete
 ```
 
 ### 仅导出指定对话
 
 ```bash
-python export.py --output ./deepseek-chats --filter "关键词"
+uv run export.py --output ./deepseek-chats --filter "关键词"
 ```
 
 ## 输出
