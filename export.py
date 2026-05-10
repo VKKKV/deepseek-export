@@ -24,46 +24,58 @@ BASE_URL = "https://chat.deepseek.com"
 # ─── Token 获取 ───────────────────────────────────────────────
 
 def get_token_via_browser(headless=False):
-    """启动浏览器，等待用户登录，从 localStorage 提取 token"""
+    """启动浏览器，等待用户登录，从 localStorage 提取 token
+    使用持久化上下文，登录态会保存到 ~/.local/share/deepseek-export/browser-data/，
+    下次运行无需重新登录。
+    """
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        print("错误: 需要 playwright，请运行: pip install playwright && playwright install chromium")
+        print("错误: 需要 playwright，请运行: uv run playwright install chromium")
         sys.exit(1)
 
+    # 持久化目录，保存登录 cookie / localStorage
+    user_data_dir = os.path.expanduser("~/.local/share/deepseek-export/browser-data")
+    os.makedirs(user_data_dir, exist_ok=True)
+
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless)
-        context = browser.new_context()
-        page = context.new_page()
+        context = p.chromium.launch_persistent_context(
+            user_data_dir,
+            headless=headless,
+        )
+        page = context.pages[0] if context.pages else context.new_page()
 
-        print("正在打开 DeepSeek 登录页面...")
-        page.goto(f"{BASE_URL}/a/chat/s/new")
+        print("正在打开 DeepSeek...")
+        page.goto(f"{BASE_URL}/a/chat/s/new", wait_until="domcontentloaded")
 
-        # 等待用户登录
-        print("请在浏览器中登录 DeepSeek（或等待自动登录）...")
-        print("如果浏览器未自动打开，请手动访问 https://chat.deepseek.com")
-
+        # 先检查是否已有 token（已登录）
         token = None
-        for i in range(120):  # 最多等 2 分钟
+        for i in range(90):  # 最多等 90 秒
             try:
-                token = page.evaluate("localStorage.getItem('userToken')")
-                if token:
+                raw = page.evaluate("localStorage.getItem('userToken')")
+                if raw and isinstance(raw, str) and raw.strip() not in ("", "null", "undefined"):
+                    token = raw.strip()
                     break
             except Exception:
                 pass
+            if i == 3:
+                print("请在浏览器中登录 DeepSeek...")
             time.sleep(1)
 
-        browser.close()
+        context.close()
 
     if not token:
         print("错误: 未能获取 token，请手动提供 --token 参数")
+        print("  1) 浏览器 F12 → Console → localStorage.getItem('userToken')")
+        print("  2) 或 Network 标签找任意请求的 Authorization 头")
+        print("  然后: uv run export.py --token 'Bearer sk-xxx'")
         sys.exit(1)
 
     # token 可能已经包含 "Bearer " 前缀，也可能没有
     if not token.startswith("Bearer "):
         token = f"Bearer {token}"
 
-    print("✓ Token 获取成功")
+    print(f"✓ Token 获取成功 (前 20 字符: {token[:20]}...)")
     return token
 
 
@@ -89,7 +101,13 @@ def fetch_all_sessions(token, count=500):
     resp.raise_for_status()
     data = resp.json()
 
-    sessions = data.get("data", {}).get("biz_data", {}).get("chat_sessions", [])
+    biz = (data.get("data") or {}).get("biz_data") or {}
+    sessions = biz.get("chat_sessions") or []
+
+    if not sessions:
+        # 打印原始响应帮助调试
+        print(f"  原始响应 (前 500 字符): {json.dumps(data, ensure_ascii=False)[:500]}")
+
     return sessions
 
 
@@ -103,7 +121,8 @@ def fetch_messages(token, session_id):
     resp.raise_for_status()
     data = resp.json()
 
-    messages = data.get("data", {}).get("biz_data", {}).get("messages", [])
+    messages = (data.get("data") or {}).get("biz_data") or {}
+    messages = messages.get("messages") or []
     return messages
 
 
