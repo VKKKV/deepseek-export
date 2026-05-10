@@ -46,6 +46,12 @@ def _safe_json(resp):
         return None
 ```
 
+### Pattern: Alternate list payloads
+
+DeepSeek endpoints can move list payloads between `data.biz_data`, `biz_data`, `data`, and the root object. When parsing message history, check each candidate location and accept list-valued candidates directly.
+
+Do not return early on an empty list if another candidate key may contain real data.
+
 ---
 
 ## API Error Responses
@@ -69,3 +75,7 @@ The delete endpoint may return HTTP 200 but still carry a business failure in JS
 ### Common Mistake: Letting cleanup raise
 
 Context shutdown on Wayland/Hyprland can raise even after successful token capture. Cleanup should be best-effort.
+
+### Common Mistake: Treating one empty list as authoritative
+
+Some payloads include an empty `messages` key while the real records live under another key such as `items` or `chat_messages`. Search all known candidate keys before deciding a conversation is empty.

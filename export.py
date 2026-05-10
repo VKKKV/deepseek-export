@@ -170,6 +170,13 @@ def _page_sessions_debug(data, page_num):
     print(f"  第 {page_num} 页原始响应 (前 500 字符): {json.dumps(data, ensure_ascii=False)[:500]}")
 
 
+def _payload_preview(data, limit=500):
+    try:
+        return json.dumps(data, ensure_ascii=False)[:limit]
+    except Exception:
+        return str(data)[:limit]
+
+
 def fetch_all_sessions(token, count=500):
     """获取所有对话会话列表，count 为最大会话数"""
     max_sessions = max(int(count or 0), 0)
@@ -261,11 +268,40 @@ def fetch_messages(token, session_id):
 
     resp = requests.get(url, headers=headers, params=params)
     resp.raise_for_status()
-    data = resp.json()
+    data = _safe_json(resp)
+    if not isinstance(data, dict):
+        print(f"  会话 {session_id} 的消息响应不是 JSON 对象: {_payload_preview(data)}")
+        return []
 
-    messages = (data.get("data") or {}).get("biz_data") or {}
-    messages = messages.get("messages") or []
-    return messages
+    candidates = [
+        (data.get("data") or {}).get("biz_data") or {},
+        data.get("biz_data") or {},
+        data.get("data") or {},
+        data,
+    ]
+    keys = ("messages", "chat_messages", "history_messages", "items")
+    empty_messages = None
+
+    for candidate in candidates:
+        if isinstance(candidate, list):
+            if candidate:
+                return candidate
+            empty_messages = candidate
+            continue
+        if not isinstance(candidate, dict):
+            continue
+        for key in keys:
+            messages = candidate.get(key)
+            if isinstance(messages, list) and messages:
+                return messages
+            if isinstance(messages, list):
+                empty_messages = messages
+
+    if empty_messages is not None:
+        return empty_messages
+
+    print(f"  会话 {session_id} 的消息响应结构异常: {_payload_preview(data)}")
+    return []
 
 
 def delete_session(token, session_id):
