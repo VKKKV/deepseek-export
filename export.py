@@ -39,9 +39,15 @@ def get_token_via_browser(headless=False):
     os.makedirs(user_data_dir, exist_ok=True)
 
     with sync_playwright() as p:
+        # Wayland 下 Chromium 需要 ozone-platform 提示，否则闪退
+        launch_args = [
+            "--disable-blink-features=AutomationControlled",
+            "--ozone-platform-hint=auto",
+        ]
         context = p.chromium.launch_persistent_context(
             user_data_dir,
             headless=headless,
+            args=launch_args,
         )
         page = context.pages[0] if context.pages else context.new_page()
 
